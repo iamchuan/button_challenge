@@ -1,0 +1,281 @@
+---
+title: 'Data Coding Challenge: Implications of a Movie Loyalty Membership Program'
+author: "Chuan Hong"
+date: "3/20/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warming = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+```
+
+```{r}
+# load pakages
+library(RMySQL)
+library(dplyr)
+library(data.table)
+library(dtplyr)
+library(ggplot2)
+library(gridExtra)
+```
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+##########################
+# read tables from MySQL #
+##########################
+con <- dbConnect(MySQL(),
+                 user="<user>", 
+                 password="<password>", 
+                 dbname="button", 
+                 host="localhost")
+
+res <- dbSendQuery(con, "SELECT * FROM customers")
+customers <- data.table(fetch(res, n = -1))
+
+res <- dbSendQuery(con, "SELECT * FROM purchases_view")
+purchases <- data.table(fetch(res, n = -1))
+
+dbDisconnect(conn = con)
+```
+
+```{r, warning=FALSE, message=FALSE}
+#######################
+# data transformation #
+#######################
+
+# append purchases to transactions
+purchases <- purchases %>%
+  merge(customers %>% 
+          .[, .(id, loyalty)], 
+        by.x = "user_id", by.y = "id") %>% 
+  .[, payment := value - point_redeemed/10]
+
+# convert empty string to NA
+customers[customers == ""] <- NA
+
+# customers with more than one order
+# function to calculate date difference
+diffdays <- function(begin_date, end_date) {
+  as.integer(difftime(end_date, begin_date, units = "days"))
+}
+
+customers_with_orders <- customers %>%
+  .[number_of_purchases > 1] %>%
+  merge(purchases %>% 
+          .[, .(first_order_date = min(date),
+                last_order_date = max(date)), 
+            by = user_id],
+        by.x = "id", by.y = "user_id", all.x = TRUE) %>%
+  .[, time_between_purchases := diffdays(signup_date, last_order_date) / number_of_purchases] %>%
+  .[, average_order_value := value_of_purchases / number_of_purchases] %>%
+  .[, time_to_first_purchase := diffdays(signup_date, first_order_date)]
+
+```
+
+## 1. Introduction
+
+In recent years, loyalty membership programs are popular and ubiquitous marketing instruments. Understanding the efficacy of a loyalty program is important for further marketing campaign and promotion. The project shown here is a data analysis based on a two-years (2012-2014) data of movie memberships, consist of 9995 loyalty customers and 10005 non-loyalty customers. The distribution of gender, location, and age are similar between these two groups.
+
+```{r}
+grid.arrange(
+customers %>% 
+  ggplot(aes(loyalty,fill=age)) + 
+  geom_bar(position="dodge")+
+  xlab("Age")+
+  ylab("Count")+
+  ylim(0,3000)+
+  theme_bw()+
+  scale_fill_brewer(palette = "Blues"),
+customers %>% 
+  ggplot(aes(loyalty,fill=gender)) + 
+  geom_bar(position="dodge")+
+  xlab("Gender")+
+  ylab("Count")+
+  ylim(0,3000)+
+  theme_bw()+
+  scale_fill_brewer(palette = "Blues"),
+customers %>% 
+  ggplot(aes(loyalty,fill=location)) + 
+  geom_bar(position="dodge")+
+  xlab("Location")+
+  ylab("Count")+
+  ylim(0,3000)+
+  theme_bw()+
+  scale_fill_brewer(palette = "Blues"),
+nrow=3, top = "Distribution of Age, Gender, Location by Customer Type"
+)
+```
+
+## 2. Time Interval between Purchases
+
+One primary aim of loyalty programs is to increase customer retention. It means that every company wants their customer to come back to buy more products after they make the first purchase. In this project, I caltulated time interverval between purchases and purchase frequences to investigate the loyalty customers retention status. 
+
+The graphs below show that the mean time to first purchase of loyalty customers (64 days) is significnalty less than that of non-loyealty customer (75 days) (Mann-Whitney-Wilcoxon test, p<0.05).
+
+```{r}
+# stat analysis
+tapply(customers_with_orders$time_to_first_purchase,
+       customers_with_orders$loyalty,
+       summary)
+
+wilcox.test(time_to_first_purchase ~ loyalty , data=customers_with_orders)
+```
+
+```{r, echo=FALSE, message=FALSE}
+grid.arrange(
+customers_with_orders %>% 
+  ggplot(aes(loyalty,time_to_first_purchase)) + 
+  geom_boxplot(aes(fill = factor(loyalty)))+
+  xlab("Customer Type")+
+  ylab("Time to First Purchase (Day)")+
+  theme_bw(),
+customers_with_orders %>% 
+  ggplot(aes(time_to_first_purchase, fill = loyalty)) + 
+  geom_histogram(bins = 30, alpha=.5, position="identity")+
+  xlab("Time to First Purchase (Day)")+
+  ylab("Count")+
+  theme_bw(),
+ncol=2, top = "Time Interval between the Sign-up and First Purchase"
+)
+```
+
+Similarly, the time between purchases among loyalty customers (67 days) is significantly than that of non-loyalty customers (77 days). It implies that loyal program potentially influences the purchase bahaviors (Mann-Whitney-Wilcoxon test, p<0.05). 
+
+```{r}
+# stat analysis
+tapply(customers_with_orders$time_between_purchases,
+       customers_with_orders$loyalty,
+       summary)
+
+wilcox.test(time_between_purchases ~ loyalty , data=customers_with_orders)
+```
+
+```{r}
+grid.arrange(
+customers_with_orders %>% 
+  ggplot(aes(loyalty,time_between_purchases)) + 
+  geom_boxplot(aes(fill = factor(loyalty)))+
+  xlab("Customer Type")+
+  ylab("Time between Purchases (Day)")+
+  theme_bw(),
+customers_with_orders %>% 
+  ggplot(aes(time_between_purchases, fill = loyalty)) + 
+  geom_histogram(bins = 30, alpha=.5, position="identity")+
+  xlab("Time between Purchases (Day)")+
+  ylab("Count")+
+  theme_bw(),
+ncol=2, top = "Time between Purchases"
+)
+```
+
+## 3. Purchase Frequency 
+
+The purchase frequency here is defined as the number of times that a customer has made a purchase in this program. The distribution of the whole number of purchases shows that loyalty customers (mean:9, range:0-216) purchased more frequently than non-loyalty customers (mean=6, range:0-136) (Mann-Whitney-Wilcoxon test, p<0.05).
+
+```{r}
+# stat analysis
+tapply(customers$number_of_purchases,
+       customers$loyalty,
+       summary)
+
+wilcox.test(number_of_purchases ~ loyalty , data=customers)
+```
+
+```{r}
+# number_of_purchases histogram grouped by loyalty
+grid.arrange(
+  customers %>%
+    ggplot(aes(number_of_purchases, fill = loyalty)) + 
+    geom_histogram(bins = 30, alpha=.6, position="identity")+
+    xlab("#Purchases")+
+    theme_bw(), 
+  customers %>%
+    ggplot(aes(number_of_purchases, fill = loyalty)) + 
+    geom_histogram(bins = 30, alpha=.6, position="identity") + 
+    scale_x_log10() + 
+    xlab("Log10 (#Purchases)")+
+    theme_bw(),
+  nrow=2, top = "Distribution of Number of Purchases by Customer Type"
+)
+```
+
+## 4. Purchase Value  
+
+Then, let's take a look if loyalty program promoted the purchase value during the two years. The real payment of purchase among loyalty customers (mean:28660, range:0-1424000) are significalty higher that of other customers (mean:17460, range:0-1074000)(Mann-Whitney-Wilcoxon test, p<0.05).
+
+```{r}
+# stat analysis
+tapply(customers$value_of_purchases - customers$total_points_redeemed / 10,
+       customers$loyalty,
+       summary)
+
+wilcox.test(customers$value_of_purchases - customers$total_points_redeemed / 10 ~ loyalty, data=customers)
+```
+
+```{r}
+# Total Payment histogram grouped by loyalty
+grid.arrange(
+  customers %>%
+    ggplot(aes(value_of_purchases - total_points_redeemed / 10, 
+               fill = loyalty)) + 
+    geom_histogram(bins = 30, alpha=.6, position="identity") +
+    xlab("Total Payment") +
+    theme_bw(),
+  customers %>%
+    ggplot(aes(value_of_purchases - total_points_redeemed / 10, 
+           fill = loyalty)) + 
+    geom_histogram(bins = 30, alpha=.6, position="identity") + 
+    scale_x_log10() + 
+    xlab("log10 (Total Payment)")+
+    theme_bw(),
+ncol=2, top = "Total Payment of Purchases"
+)
+```
+
+Interestingly, compared to non-loyalty custromers (2612 cents/order), the average order value is slightly higher among loyalty customers (2748 cents/order). It seems like that loyalty program promotes customes to purchaser more expensive products. 
+
+```{r}
+# stat analysis
+tapply(customers_with_orders$average_order_value,
+       customers_with_orders$loyalty,
+       summary)
+
+wilcox.test(average_order_value ~ loyalty, data=customers_with_orders)
+```
+
+```{r}
+grid.arrange(
+customers_with_orders %>% 
+  ggplot(aes(loyalty,average_order_value)) + 
+  geom_boxplot(aes(fill = factor(loyalty)))+
+  xlab("Customer Type")+
+  ylab("Average Order Value (cents)")+
+  theme_bw(),
+customers_with_orders %>% 
+  ggplot(aes(average_order_value, fill = loyalty)) + 
+  geom_histogram(bins = 30, alpha=.5, position="identity")+
+  xlab("Average Order Value (cents)")+
+  ylab("Count")+
+  theme_bw(),
+ncol=2, top = "Average Order Value"
+)
+```
+
+
+## 5. Conclusion
+
+Summarily, this loyalty program effectively influences custermer's purchase decision:
+
+(1) Loyalty customers are more avtively and frequently to buy products;
+
+(2) Loyalty customers contribute more profit than non-loyal custermers;
+
+(3) Loyalty customers are more likely to come back to buy more products. 
+
+ 
+
+
+
+
